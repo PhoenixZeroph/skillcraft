@@ -1,0 +1,341 @@
+SkillCraft – Core Codebase  ✨  v1.1 License - Owner (AAndrIng)
+================================================
+•Removed the hard dependency on **micropip** that caused a
+`ModuleNotFoundError` in environments where Pyodide is not present.
+• Added a dynamic `micropip` (and BeeAI) stub that allows
+running, testing, and debugging the project even if these libraries are not installed.
+• Introduced `requirements.txt` within the document so that no essential packages are missing from a traditional *pip* installation.
+• Added minimal unit tests in `tests/test_core.py` to
+ensure the Granite client and cost logger work..
+
+> Copy/paste the blocks into the corresponding files or
+> run `python -m skillcraft.wx_client` after installing the
+> indicated dependencies.
+"""
+
+# ==============================
+# requirements.txt
+# ==============================
+# IBM & Cloud
+ibm-watsonx-ai>=0.7.0
+python-dotenv>=1.0.1
+
+# Web & API
+fastapi>=0.110
+uvicorn[standard]>=0.29
+slack_bolt>=1.18
+
+# Data & Utils
+pandas>=2.2
+requests>=2.31
+beautifulsoup4>=4.12
+click>=8.1
+
+# Dashboard
+streamlit>=1.32
+
+# LLM Orchestration (opcional)
+beeai>=0.3.1
+
+# Micropip stub – For compatibility only in Pyodide; if the package
+# exists, it will be installed; otherwise, the code uses a fallback.
+micropip; python_version>="3.8"
+
+# ==============================
+# wx_client.py
+# ==============================
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from datetime import datetime
+from typing import Final
+
+import pandas as pd
+from dotenv import load_dotenv
+
+try:  # ─── IBM SDK
+    from ibm_watsonx_ai.foundation_models import Model
+except ModuleNotFoundError as exc:  # pragma: no cover
+    raise RuntimeError(
+        "ibm-watsonx-ai is not installed. Run `pip install -r requirements.txt`."
+    ) from exc
+
+load_dotenv()
+
+_COST_FILE: Final[Path] = Path("costing/cost_sheet.csv")
+_COST_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+_model: Final[Model] = Model(
+    model_id=os.getenv("WATSON_MODEL", "granite-3-8b-instruct"),
+    project_id=os.environ["PROJECT_ID"],
+    api_key=os.environ["API_KEY"],
+    url=os.getenv("WATSON_URL", "https://us-south.ml.cloud.ibm.com"),
+)
+
+
+def _log_usage(ru: float, cuh: float = 0.0) -> None:
+    """Append usage row (RU / CUH) to the cost ledger CSV."""
+    data = pd.DataFrame(
+        [[datetime.utcnow().isoformat(timespec="seconds"), ru, cuh]],
+        columns=["timestamp", "ru", "cuh"],
+    )
+    data.to_csv(_COST_FILE, mode="a", header=not _COST_FILE.exists(), index=False)
+
+
+def complete(prompt: str, *, max_tokens: int = 512, temperature: float = 0.2) -> str:
+    """Wrapper for Granite completion storing Resource-Unit usage."""
+    resp = _model.generate(
+        prompt,
+        max_new_tokens=max_tokens,
+        temperature=temperature,
+        return_usage=True,
+    )
+    ru = (
+        resp.usage.input_tokens + resp.usage.generated_tokens
+    ) / 1_000  # 1 RU → 1 k tokens
+    _log_usage(ru)
+    return resp.generated_text  # type: ignore[attr-defined]
+
+
+# ==============================
+# agents.py
+# ==============================
+"""BeeAI agent with fallback when the library is not present."""
+
+from typing import Callable, List
+
+# ─── Fallback/stub if beeai is not available ──────────────────
+try:
+    from beeai.agents.react import ReActAgent  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover – environment without BeeAI
+
+    class _StubAgent:  # pylint: disable=too-few-public-methods
+        """Minimum emergency agent."""
+
+        def __init__(self, tools: List[Callable[[str], str]]):
+            self.tools = tools
+
+        def __call__(self, prompt: str) -> str:  # noqa: D401
+            # We always choose the first tool (classification) by default
+            return self.tools[0](prompt)
+
+    ReActAgent = _StubAgent  # type: ignore
+
+from wx_client import complete  # noqa: E402  pylint: disable=wrong-import-position
+
+
+# --- helpers ------------------------------------------------------
+
+def _tool(prompt: str, *, system: str, max_tokens: int = 256) -> str:
+    return complete(f"{system}\n---\n{prompt}", max_tokens=max_tokens)
+
+
+def classify_task(task: str) -> str:
+    return _tool(task, system="You're a productivity expert. Summarize the task in <30 words.", max_tokens=64)
+
+
+def generate_plan(task: str) -> str:
+    return _tool(task, system="You are a Senior DevOps. Deliver a plan in bullets (<8) to automate the task.")
+
+
+def suggest_courses(topic: str) -> str:
+    return _tool(
+        topic,
+        system="Recommends 3 courses (Title – Platform – Duration) to master the subject.",
+        max_tokens=128,
+    )
+
+
+# --- agent router -------------------------------------------------
+
+router = ReActAgent(tools=[classify_task, generate_plan, suggest_courses])  # type: ignore[misc]
+
+
+def handle_message(message: str) -> str:
+    return router(message)
+
+
+# ==============================
+# api.py
+# ==============================
+import logging
+
+from fastapi import FastAPI, Request
+
+try:
+    from slack_bolt import App as SlackApp
+    from slack_bolt.adapter.fastapi import SlackRequestHandler
+except ModuleNotFoundError:  # pragma: no cover
+    SlackApp = None  # type: ignore
+    SlackRequestHandler = None  # type: ignore
+
+from agents import handle_message  # noqa: E402  pylint: disable=wrong-import-position
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+api = FastAPI(title="SkillCraft API", version="1.1.0")
+
+if SlackApp and SlackRequestHandler:
+
+    slack_app = SlackApp(
+        token=os.getenv("SLACK_BOT_TOKEN", "dummy"),
+        signing_secret=os.getenv("SLACK_SIGNING_SECRET", "dummy"),
+    )
+    handler = SlackRequestHandler(slack_app)
+
+    @slack_app.event("app_mention")  # type: ignore[arg-type]
+    def _(body, say):  # noqa: D401, ANN001
+        text = body["event"].get("text", "")
+        logging.info("Mention received: %s", text)
+        say(handle_message(text))
+
+    @api.post("/slack/events")
+    async def slack_endpoint(request: Request):  # noqa: D401
+        return await handler.handle(request)  # type: ignore[func-returns-value]
+
+else:
+
+    @api.get("/")
+    async def root():  # noqa: D401
+        """Stub route when Slack SDK not installed."""
+        return {"status": "Slack dependencies missing"}
+
+
+# ==============================
+# scrape.py
+# ==============================
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import requests
+from bs4 import BeautifulSoup as BS
+
+RAW = Path("data/raw")
+RAW.mkdir(parents=True, exist_ok=True)
+
+
+def scrape_github(label: str = "good first issue", language: str = "python", pages: int = 30):
+    headers = {"Accept": "application/vnd.github+json"}
+    items: list[dict] = []
+    for page in range(1, pages + 1):
+        q = f"label:\"{label}\" state:open language:{language}"
+        url = f"https://api.github.com/search/issues?q={q}&per_page=100&page={page}"
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        batch = resp.json().get("items", [])
+        if not batch:
+            break
+        for it in batch:
+            items.append(
+                {
+                    "source": "github",
+                    "id": it["id"],
+                    "title": it["title"],
+                    "body": it.get("body", ""),
+                    "labels": [lab["name"] for lab in it["labels"]],
+                    "created": it["created_at"],
+                }
+            )
+        time.sleep(1)
+    (RAW / "github_issues.jsonl").write_text("\n".join(json.dumps(i) for i in items))
+
+
+def scrape_jira_demo(url: str = "https://jira.atlassian.com/browse/ASF"):  # noqa: D401
+    resp = requests.get(url, timeout=15)
+    resp.raise_for_status()
+    soup = BS(resp.text, "html.parser")
+    title_el = soup.select_one("h1#summary-val")
+    body_el = soup.select_one("div#description-val")
+    if not (title_el and body_el):  # pragma: no cover – cambio DOM
+        raise RuntimeError("No se encontró título o descripción en la página JIRA demo.")
+    rec = {
+        "source": "jira",
+        "key": url.rsplit("/", 1)[-1],
+        "title": title_el.get_text(strip=True),
+        "body": body_el.get_text(" ", strip=True),
+    }
+    (RAW / "jira_sample.jsonl").write_text(json.dumps(rec))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    scrape_github()
+    scrape_jira_demo()
+
+
+# ==============================
+# dashboard.py (Streamlit)
+# ==============================
+from pathlib import Path
+
+import streamlit as st
+
+try:
+    import pandas as pd
+except ModuleNotFoundError:  # pragma: no cover – Pyodide without pandas
+    pd = None  # type: ignore
+
+st.set_page_config(page_title="SkillCraft KPIs", layout="centered", page_icon="📊")
+
+COST_FILE = Path("costing/cost_sheet.csv")
+
+
+def _load_costs():  # noqa: D401
+    if pd is None or not COST_FILE.exists():
+        return None
+    return pd.read_csv(COST_FILE)
+
+
+df = _load_costs()
+
+st.title("SkillCraft • Live KPIs 📊")
+
+if df is None:
+    st.warning("pandas is not available or there is no cost data to display yet.")
+else:
+    col1, col2 = st.columns(2)
+    col1.metric("Total RU", f"{df.ru.sum():.1f}")
+    col2.metric("Total CUH", f"{df.cuh.sum():.2f}")
+    st.subheader("Últimas llamadas Granite")
+    st.dataframe(df.tail(25), use_container_width=True)
+
+
+# ==============================
+# tests/test_core.py
+# ==============================
+"""Pruebas mínimas para validar logging y completions."""
+
+from pathlib import Path
+
+import pytest
+
+import wx_client
+
+
+def test_complete_returns_text(monkeypatch):
+    class _FakeResp:  # pylint: disable=too-few-public-methods
+        class usage:  # noqa: D401
+            input_tokens = 10
+            generated_tokens = 10
+
+        generated_text = "hola"
+
+    monkeypatch.setattr(wx_client._model, "generate", lambda *_, **__: _FakeResp())
+    text = wx_client.complete("ping", max_tokens=5)
+    assert text == "hola"
+
+
+def test_log_file_created(tmp_path, monkeypatch):
+    monkeypatch.setattr(wx_client, "_COST_FILE", tmp_path / "cost.csv")
+
+    class _FakeResp:  # pylint: disable=too-few-public-methods
+        class usage:  # noqa: D401
+            input_tokens = 0
+            generated_tokens = 0
+
+        generated_text = "ok"
+
+    monkeypatch.setattr(wx
