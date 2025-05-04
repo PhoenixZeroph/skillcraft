@@ -1,2 +1,6 @@
 # skillcraft
-Hackathon – Make Work Less Boring with IBM Granite - An internal co-pilot who, via chat, identifies tedious tasks in Jira/Slack, generates an automation plan, and suggests micro-upskilling to the employee.
+Hackathon – Make Work Less Boring with IBM Granite 
+"Instructions to craft"
+make install   # create venv, install requirements
+make test      # pytest + coverage  
+make demo      # FastAPI, Slack listener and Streamlit start
