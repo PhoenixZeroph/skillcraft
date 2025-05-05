@@ -1,0 +1,25 @@
+name: CI
+on:
+  push:
+    branches: [ main, release/** ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --no-cache-dir -r requirements.txt
+      - run: make lint
+      - run: make test
+      - run: make sbom
+      - uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          ignore-unfixed: true
+          format: table
+          exit-code: 0
