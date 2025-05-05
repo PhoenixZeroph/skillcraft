@@ -1,10 +1,29 @@
-# skillcraft
-Hackathon – Make Work Less Boring with IBM Granite 
+# SkillCraft – Make Work Less Boring 🤖
 
-"Instructions to craft"
+> Slack/Jira copiloto que detecta trabajo repetitivo y genera planes de automatización + micro‑upskilling.
 
-insert the secuence of comands
+## 1. TL;DR
+```bash
+make demo        # levanta bot + dashboard en local
+```
 
-make install   # create venv, install requirements
-make test      # pytest + coverage  
-make demo      # FastAPI, Slack listener and Streamlit start
+## 2. Setup rápido
+```bash
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # completa tus credenciales
+make demo
+```
+
+## 3. Arquitectura
+![C4 Diagram](docs/architecture.png)
+
+## 4. Cost & Créditos
+| Métrica | Valor |
+|---------|-------|
+| RU total | 250 |
+| CUH total | 7 |
+| Costo USD | 7.17 |
+
+## 5. Licencia
+MIT - AAndrIng
