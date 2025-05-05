@@ -11,7 +11,7 @@ make demo        # up bot + local dashboard
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # completa tus credenciales
+cp .env.example .env   # complete your credentials
 make demo
 ```
 
@@ -19,11 +19,11 @@ make demo
 ![C4 Diagram](docs/architecture.png)
 
 ## 4. Cost & Credits
-| Metrica | Value |
+| Metrics | Value |
 |---------|-------|
 | RU total | 250 |
 | CUH total | 7 |
 | Cost USD | 7.17 |
 
-## 5. Licencia
+## 5. Licence
 MIT - AAndrIng
